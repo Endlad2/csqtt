@@ -13,7 +13,7 @@
 
 <br><br>
 
-[**CSQTT Telegram Community**](https://t.me/csqtt)
+[**CSQTT Telegram Community**](t.me/wdttcommunity)
 
 </div>
 
