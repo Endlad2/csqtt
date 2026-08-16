@@ -159,7 +159,6 @@ object CsqttConstants {
         const val ISSUES = "https://github.com/amurcanov/csqtt/issues/new"
         const val DEVELOPER_PROFILE = "https://github.com/amurcanov"
         const val REPOSITORY = "https://github.com/amurcanov/csqtt"
-        const val DONATE = "https://yoomoney.ru/to/4100119505530465/100"
     }
 
     object Patterns {

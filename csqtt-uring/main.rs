@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 #![allow(linker_messages)]
+#![recursion_limit = "256"]
 
 mod dataplane;
 mod model;
@@ -174,6 +175,7 @@ pub struct App {
     pub proxy_operation: tokio::sync::Mutex<()>,
     pub proxy_trigger: tokio::sync::Notify,
     pub proxy_port_listening: std::sync::atomic::AtomicBool,
+    pub proxy_health_error: std::sync::RwLock<Option<String>>,
     pub dataplane: std::sync::OnceLock<dataplane::DataplaneHandle<protocol::ProtocolCommand>>,
 }
 
@@ -1378,6 +1380,7 @@ async fn main() -> Result<()> {
         proxy_operation: tokio::sync::Mutex::new(()),
         proxy_trigger: tokio::sync::Notify::new(),
         proxy_port_listening: std::sync::atomic::AtomicBool::new(true),
+        proxy_health_error: std::sync::RwLock::new(None),
         dataplane: std::sync::OnceLock::new(),
     });
 
@@ -1568,6 +1571,7 @@ async fn local_proxy_monitor_loop(app: Arc<App>) {
         };
 
         let Some(profile) = profile else {
+            *app.proxy_health_error.write().unwrap() = None;
             let old = app.proxy_route.write().await.take();
             if let Some(route) = old {
                 route.deactivate().await;
@@ -1594,6 +1598,7 @@ async fn local_proxy_monitor_loop(app: Arc<App>) {
         if let Some(route) = current {
             if route.is_alive() && route.matches(&profile) {
                 if !proxy_route::port_is_listening(profile.port).await {
+                    *app.proxy_health_error.write().unwrap() = Some(format!("Порт {} не отвечает", profile.port));
                     app.proxy_port_listening
                         .store(false, std::sync::atomic::Ordering::Release);
                     let failed = app.proxy_route.write().await.take();
@@ -1618,12 +1623,14 @@ async fn local_proxy_monitor_loop(app: Arc<App>) {
                         .store(true, std::sync::atomic::Ordering::Release);
                     match proxy_route::probe_proxy(&profile).await {
                         Ok(()) => {
+                            *app.proxy_health_error.write().unwrap() = None;
                             health_failures = 0;
                             port_failures = 0;
                             pause_round = 0;
                             wait = HEALTH_INTERVAL;
                         }
                         Err(error) => {
+                            *app.proxy_health_error.write().unwrap() = Some(format!("{error:#}"));
                             health_failures = health_failures.saturating_add(1);
                             log_event(
                                 &app,
@@ -1665,6 +1672,7 @@ async fn local_proxy_monitor_loop(app: Arc<App>) {
         app.proxy_port_listening
             .store(listening, std::sync::atomic::Ordering::Release);
         if !listening {
+            *app.proxy_health_error.write().unwrap() = Some(format!("Порт {} не отвечает", profile.port));
             if port_failures == 0 {
                 log_event(
                     &app,
@@ -1706,6 +1714,7 @@ async fn local_proxy_monitor_loop(app: Arc<App>) {
         });
         match proxy_route::ProxyRoute::connect(&profile, proxy_log).await {
             Ok(route) => {
+                *app.proxy_health_error.write().unwrap() = None;
                 app.proxy_route.write().await.replace(route);
                 log_event(
                     &app,
@@ -1719,6 +1728,7 @@ async fn local_proxy_monitor_loop(app: Arc<App>) {
                 wait = HEALTH_INTERVAL;
             }
             Err(error) => {
+                *app.proxy_health_error.write().unwrap() = Some(format!("{error:#}"));
                 proxy_route::ProxyRoute::cleanup_stale_policy().await;
                 log_event(
                     &app,

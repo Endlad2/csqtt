@@ -63,7 +63,6 @@ import androidx.compose.material.icons.filled.Favorite
 @Composable
 internal fun InfoHeroCard(
     currentVersion: String,
-    onSupportClick: () -> Unit,
     onCryptoClick: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -90,24 +89,6 @@ internal fun InfoHeroCard(
                 color = colors.onSurface,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
-
-            Button(
-                onClick = onSupportClick,
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-                shape = RoundedCornerShape(18.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = CSQTTColors.donate,
-                    contentColor = Color.White,
-                ),
-                contentPadding = PaddingValues(horizontal = 16.dp)
-            ) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_yoomoney),
-                    contentDescription = "ЮMoney",
-                    tint = Color.Unspecified,
-                    modifier = Modifier.height(26.dp)
-                )
-            }
 
             Button(
                 onClick = onCryptoClick,

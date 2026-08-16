@@ -103,7 +103,6 @@ private const val ReleasesUrl = CsqttConstants.Links.RELEASES
 private const val IssuesUrl = CsqttConstants.Links.ISSUES
 private const val DeveloperProfileUrl = CsqttConstants.Links.DEVELOPER_PROFILE
 private const val RepositoryUrl = CsqttConstants.Links.REPOSITORY
-private const val DonateUrl = CsqttConstants.Links.DONATE
 
 private val browserPackages = listOf(
     "com.android.chrome",
@@ -182,7 +181,6 @@ fun InfoTab(
         ) {
             InfoHeroCard(
                 currentVersion = currentVersion,
-                onSupportClick = { openUrlInBrowser(context, DonateUrl) },
                 onCryptoClick = { showCryptoDialog = true },
             )
 

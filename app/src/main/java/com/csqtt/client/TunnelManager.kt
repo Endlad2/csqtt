@@ -136,11 +136,14 @@ object TunnelManager {
         processStartedAtMs = SystemClock.elapsedRealtime()
         uptimeSeconds.value = 0L
         uptimeJob?.cancel()
-        uptimeJob = activeScope.launch {
-            while (isActive && running.value) {
+        uptimeJob = scope.launch(Dispatchers.Default) {
+            while (isActive) {
                 val start = processStartedAtMs
-                if (start > 0L) {
+                val isProcessActive = running.value || process != null
+                if (start > 0L && isProcessActive) {
                     uptimeSeconds.value = (SystemClock.elapsedRealtime() - start) / 1000L
+                } else if (!isProcessActive && !starting.value) {
+                    break
                 }
                 delay(1000L)
             }
@@ -154,6 +157,8 @@ object TunnelManager {
         if (start > 0L) {
             uptimeSeconds.value = (SystemClock.elapsedRealtime() - start) / 1000L
             processStartedAtMs = 0L
+        } else {
+            uptimeSeconds.value = null
         }
     }
 
@@ -762,11 +767,11 @@ object TunnelManager {
         )
         process = startedProcess
         processIdentity = identity
+        running.value = true
         startUptimeTimer()
         wrapAuthTimeoutCount = 0
         activeWorkers.value = 0
         resetWorkerRecoveryState()
-        running.value = true
         startLogReader(identity)
         scheduleStartupDiagnostic(identity)
     }

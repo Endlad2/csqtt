@@ -406,6 +406,7 @@ async fn stats(State(state): State<WebState>, _headers: HeaderMap) -> impl IntoR
         "local_proxy_port": db.local_proxy.active_profile().map(|p| p.port).unwrap_or(0),
         "local_proxy_active": local_proxy_active,
         "local_proxy_port_listening": state.app.proxy_port_listening.load(Ordering::Acquire),
+        "local_proxy_health_error": state.app.proxy_health_error.read().unwrap().clone(),
         "local_proxy_tcp_sessions": local_proxy_tcp_sessions,
         "local_proxy_udp_flows": local_proxy_udp_flows,
         "local_proxy_tcp_peak": local_proxy_tcp_peak,
@@ -1155,6 +1156,7 @@ async fn local_proxy_get(State(state): State<WebState>) -> impl IntoResponse {
         "profiles": profiles,
         "route_active": active,
         "port_listening": state.app.proxy_port_listening.load(std::sync::atomic::Ordering::Acquire),
+        "health_error": state.app.proxy_health_error.read().unwrap().clone(),
         "tcp_sessions": tcp_sessions,
         "udp_flows": udp_flows,
     }))
@@ -2978,7 +2980,8 @@ const PANEL_HTML: &str = r##"
                 Boolean(x.local_proxy_active),
                 x.local_proxy_port_listening,
                 Number(x.local_proxy_tcp_sessions) || 0,
-                Number(x.local_proxy_udp_flows) || 0
+                Number(x.local_proxy_udp_flows) || 0,
+                x.local_proxy_health_error || null
             );
         }
 
@@ -3017,14 +3020,14 @@ const PANEL_HTML: &str = r##"
             loadLocalProxy();
         }
 
-let localProxyData = { active_profile_id: '', profiles: [], route_active: false, port_listening: true, tcp_sessions: 0, udp_flows: 0 };
+        let localProxyData = { active_profile_id: '', profiles: [], route_active: false, port_listening: true, health_error: null, tcp_sessions: 0, udp_flows: 0 };
         let profileDlgEditId = null;
         let profileDlgSaving = false;
 
         function renderProxyProfiles() {
             const container = document.getElementById('proxyProfilesList');
             if (!container) return;
-            const { profiles, active_profile_id, route_active, port_listening, tcp_sessions, udp_flows } = localProxyData;
+            const { profiles, active_profile_id, route_active, port_listening, health_error, tcp_sessions, udp_flows } = localProxyData;
             if (!profiles.length) {
                 container.innerHTML = '<div class="proxy-empty">Нет профилей. Нажмите кнопку <strong>+</strong> чтобы добавить.</div>';
                 return;
@@ -3035,16 +3038,25 @@ let localProxyData = { active_profile_id: '', profiles: [], route_active: false,
             const trashIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>';
             container.innerHTML = profiles.map(p => {
                 const isActive = p.id === active_profile_id;
-                const badge = isActive
-                    ? (route_active
-                        ? `<span style="font-size:11px;font-weight:600;color:#10b981;margin-left:6px;">Активен</span>`
-                        : (port_listening === false
-                            ? `<span style="font-size:11px;font-weight:600;color:#ef4444;margin-left:6px;">Порт не слушается</span>`
-                            : `<span style="font-size:11px;font-weight:600;color:#f59e0b;margin-left:6px;">Подключение...</span>`))
-                    : '';
+                let badge = '';
+                if (isActive) {
+                    if (route_active) {
+                        badge = `<span style="font-size:11px;font-weight:600;color:#10b981;margin-left:6px;">Активен</span>`;
+                    } else if (port_listening === false) {
+                        badge = `<span style="font-size:11px;font-weight:600;color:#ef4444;margin-left:6px;">Порт не слушается</span>`;
+                    } else if (health_error) {
+                        badge = `<span style="font-size:11px;font-weight:600;color:#ef4444;margin-left:6px;" title="${esc(health_error)}">Проба не прошла (Direct)</span>`;
+                    } else {
+                        badge = `<span style="font-size:11px;font-weight:600;color:#f59e0b;margin-left:6px;">Подключение...</span>`;
+                    }
+                }
                 let meta = p.username ? `${p.port} · ${p.username}` : `${p.port}`;
-                if (isActive && route_active) {
-                    meta += ` · ${tcp_sessions} TCP · ${udp_flows} UDP`;
+                if (isActive) {
+                    if (route_active) {
+                        meta += ` · ${tcp_sessions} TCP · ${udp_flows} UDP`;
+                    } else if (health_error) {
+                        meta += ` · Ошибка: ${esc(health_error)}`;
+                    }
                 }
                 const toggleBtn = isActive
                     ? `<button title="Деактивировать" onclick="deactivateProxy()">${stopIcon}</button>`
@@ -3053,7 +3065,7 @@ let localProxyData = { active_profile_id: '', profiles: [], route_active: false,
                     <div class="proxy-profile-dot"></div>
                     <div class="proxy-profile-body">
                         <div class="proxy-profile-name">${esc(p.name)}${badge}</div>
-                        <div class="proxy-profile-meta">${esc(meta)}</div>
+                        <div class="proxy-profile-meta">${meta}</div>
                     </div>
                     <div class="proxy-profile-actions">
                         ${toggleBtn}
@@ -3064,19 +3076,22 @@ let localProxyData = { active_profile_id: '', profiles: [], route_active: false,
             }).join('');
         }
 
-        function updateLocalProxyRuntime(enabled, active, portListening, tcpSessions, udpFlows) {
+        function updateLocalProxyRuntime(enabled, active, portListening, tcpSessions, udpFlows, healthError) {
             const routeActive = Boolean(enabled) && Boolean(active);
             const listening = portListening !== false;
             const tcp = Number(tcpSessions) || 0;
             const udp = Number(udpFlows) || 0;
+            const err = healthError || null;
             if (
                 localProxyData.route_active === routeActive &&
                 localProxyData.port_listening === listening &&
+                localProxyData.health_error === err &&
                 localProxyData.tcp_sessions === tcp &&
                 localProxyData.udp_flows === udp
             ) return;
             localProxyData.route_active = routeActive;
             localProxyData.port_listening = listening;
+            localProxyData.health_error = err;
             localProxyData.tcp_sessions = tcp;
             localProxyData.udp_flows = udp;
             if (document.getElementById('settings-section').style.display !== 'none') {

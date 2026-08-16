@@ -314,6 +314,7 @@ async fn probe_tcp(config: &LocalProxyProfile) -> Result<()> {
     let mut last_error = None;
     for endpoint in [
         SocketAddr::from(([1, 1, 1, 1], 443)),
+        SocketAddr::from(([77, 88, 8, 8], 443)),
         SocketAddr::from(([8, 8, 8, 8], 443)),
     ] {
         match tokio::time::timeout(PROBE_TIMEOUT, socks_command(config, 0x01, endpoint)).await {
@@ -329,19 +330,52 @@ async fn probe_udp(config: &LocalProxyProfile) -> Result<()> {
     let (_control, relay) =
         socks_command(config, 0x03, SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))).await?;
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
-    let destination = SocketAddr::from(([1, 1, 1, 1], 53));
-    let mut packet = Vec::with_capacity(DNS_QUERY.len() + 10);
-    packet.extend_from_slice(&[0, 0, 0]);
-    append_socks_address(&mut packet, destination);
-    packet.extend_from_slice(DNS_QUERY);
-    socket.send_to(&packet, relay).await?;
 
-    let mut response = [0u8; 2048];
-    let (length, _) = tokio::time::timeout(PROBE_TIMEOUT, socket.recv_from(&mut response))
-        .await
-        .context("SOCKS5 UDP probe timed out")??;
-    let (_, payload) = socks_udp_response(&response[..length])?;
-    validate_dns_response(payload)
+    let dns_endpoints = [
+        SocketAddr::from(([77, 88, 8, 8], 53)), // Yandex Primary DNS
+        SocketAddr::from(([1, 1, 1, 1], 53)),   // Cloudflare Primary DNS
+        SocketAddr::from(([8, 8, 8, 8], 53)),   // Google Primary DNS
+        SocketAddr::from(([77, 88, 8, 1], 53)), // Yandex Secondary DNS
+        SocketAddr::from(([1, 0, 0, 1], 53)),   // Cloudflare Secondary DNS
+        SocketAddr::from(([9, 9, 9, 9], 53)),   // Quad9 DNS
+    ];
+
+    let mut last_error = None;
+    for destination in dns_endpoints {
+        let mut packet = Vec::with_capacity(DNS_QUERY.len() + 10);
+        packet.extend_from_slice(&[0, 0, 0]);
+        append_socks_address(&mut packet, destination);
+        packet.extend_from_slice(DNS_QUERY);
+
+        if let Err(e) = socket.send_to(&packet, relay).await {
+            last_error = Some(anyhow::anyhow!("send UDP probe to {destination} failed: {e}"));
+            continue;
+        }
+
+        let mut response = [0u8; 2048];
+        match tokio::time::timeout(Duration::from_millis(3000), socket.recv_from(&mut response)).await {
+            Ok(Ok((length, _))) => {
+                match socks_udp_response(&response[..length]) {
+                    Ok((_, payload)) => {
+                        if validate_dns_response(payload).is_ok() {
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => {
+                        last_error = Some(e);
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                last_error = Some(anyhow::anyhow!("recv UDP probe response error: {e}"));
+            }
+            Err(_) => {
+                last_error = Some(anyhow::anyhow!("UDP probe to {destination} timed out"));
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("SOCKS5 UDP probe failed for all DNS targets")))
 }
 
 pub(crate) fn socks_udp_response(packet: &[u8]) -> Result<(SocketAddr, &[u8])> {
