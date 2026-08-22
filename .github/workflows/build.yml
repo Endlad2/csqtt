@@ -1,0 +1,187 @@
+name: Build CSQTT APK
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+  checks: write
+  deployments: write
+  issues: write
+  packages: write
+  pages: write
+  pull-requests: write
+  repository-projects: write
+  security-events: write
+  statuses: write
+
+env:
+  PROJECT_ROOT: ${{ github.workspace }}
+  ANDROID_HOME: C:\Android\Sdk
+  ANDROID_SDK_ROOT: C:\Android\Sdk
+  JAVA_HOME: C:\Program Files\Microsoft\jdk-17.0.13.11-hotspot
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          targets: |
+            aarch64-linux-android
+            armv7-linux-androideabi
+            x86_64-unknown-linux-musl
+          components: rustfmt, clippy
+
+      - name: Install cargo-ndk and cargo-zigbuild
+        run: |
+          cargo install cargo-ndk --locked
+          cargo install cargo-zigbuild --locked
+        shell: powershell
+
+      - name: Setup Android SDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: microsoft
+          java-version: 17
+
+      - name: Install Android SDK and NDK
+        run: |
+          mkdir -p $env:ANDROID_HOME
+          curl -L https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip -o sdk-tools.zip
+          7z x sdk-tools.zip -o"$env:ANDROID_HOME"
+          rm sdk-tools.zip
+          echo "y" | $env:ANDROID_HOME\cmdline-tools\bin\sdkmanager --sdk_root=$env:ANDROID_HOME "platforms;android-37"
+          echo "y" | $env:ANDROID_HOME\cmdline-tools\bin\sdkmanager --sdk_root=$env:ANDROID_HOME "build-tools;34.0.0"
+          echo "y" | $env:ANDROID_HOME\cmdline-tools\bin\sdkmanager --sdk_root=$env:ANDROID_HOME "ndk;26.3.11579264"
+          echo "y" | $env:ANDROID_HOME\cmdline-tools\bin\sdkmanager --sdk_root=$env:ANDROID_HOME "cmake;3.22.1"
+          echo "ANDROID_HOME=$env:ANDROID_HOME" >> $env:GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$env:ANDROID_HOME\ndk\26.3.11579264" >> $env:GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$env:ANDROID_HOME\ndk\26.3.11579264" >> $env:GITHUB_ENV
+        shell: powershell
+
+      - name: Setup Zig
+        run: |
+          curl -L https://ziglang.org/download/0.13.0/zig-windows-x86_64-0.13.0.zip -o zig.zip
+          7z x zig.zip -o"$env:USERPROFILE\zig"
+          echo "$env:USERPROFILE\zig\zig-windows-x86_64-0.13.0" >> $env:GITHUB_PATH
+          rm zig.zip
+        shell: powershell
+
+      - name: Cache Rust
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            rust-client/target
+            csqtt-uring/target
+            build
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Build Linux Server
+        run: |
+          cd csqtt-uring
+          .\build_linux.bat --no-tests
+        shell: powershell
+
+      - name: Build Android Client
+        run: |
+          cd rust-client
+          .\build_so.bat --no-tests
+        shell: powershell
+
+      - name: Verify native libraries
+        run: |
+          if (Test-Path "app\src\main\jniLibs\arm64-v8a\libclient.so") {
+            Write-Host "arm64-v8a libclient.so found"
+          } else {
+            Write-Host "arm64-v8a libclient.so NOT found"
+            exit 1
+          }
+          if (Test-Path "app\src\main\jniLibs\armeabi-v7a\libclient.so") {
+            Write-Host "armeabi-v7a libclient.so found"
+          } else {
+            Write-Host "armeabi-v7a libclient.so NOT found"
+            exit 1
+          }
+          if (Test-Path "app\src\main\assets\csqtt") {
+            Write-Host "csqtt server binary found"
+          } else {
+            Write-Host "csqtt server binary NOT found"
+            exit 1
+          }
+        shell: powershell
+
+      - name: Build APK
+        run: |
+          .\gradlew.bat :app:assembleRelease --no-daemon
+        shell: powershell
+
+      - name: Copy APKs to output
+        run: |
+          New-Item -ItemType Directory -Force -Path "app\release"
+          if (Test-Path "app\build\outputs\apk\release\app-universal-release.apk") {
+            Copy-Item "app\build\outputs\apk\release\app-universal-release.apk" "app\release\CSQTT-universal.apk"
+          }
+          if (Test-Path "app\build\outputs\apk\release\app-arm64-v8a-release.apk") {
+            Copy-Item "app\build\outputs\apk\release\app-arm64-v8a-release.apk" "app\release\CSQTT-arm64-v8a.apk"
+          }
+          if (Test-Path "app\build\outputs\apk\release\app-armeabi-v7a-release.apk") {
+            Copy-Item "app\build\outputs\apk\release\app-armeabi-v7a-release.apk" "app\release\CSQTT-armeabi-v7a.apk"
+          }
+        shell: powershell
+
+      - name: Generate release tag
+        id: release_tag
+        run: |
+          $date = Get-Date -Format "yyyy.MM.dd.HH.mm"
+          echo "tag_name=$date" >> $env:GITHUB_OUTPUT
+        shell: powershell
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.release_tag.outputs.tag_name }}
+          name: ${{ steps.release_tag.outputs.tag_name }}
+          files: app/release/*.apk
+          generate_release_notes: false
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CSQTT-APKs-${{ steps.release_tag.outputs.tag_name }}
+          path: app/release/*.apk
+          if-no-files-found: error
