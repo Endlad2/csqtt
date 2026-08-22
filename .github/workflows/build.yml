@@ -62,26 +62,32 @@ jobs:
 
       - name: Install Android SDK and NDK
         run: |
-          mkdir C:\Android\Sdk
-          curl -L https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip -o sdk-tools.zip
-          7z x sdk-tools.zip -oC:\Android\Sdk
-          del sdk-tools.zip
-          C:\Android\Sdk\cmdline-tools\bin\sdkmanager.bat --sdk_root=C:\Android\Sdk "platforms;android-37" --yes
-          C:\Android\Sdk\cmdline-tools\bin\sdkmanager.bat --sdk_root=C:\Android\Sdk "build-tools;34.0.0" --yes
-          C:\Android\Sdk\cmdline-tools\bin\sdkmanager.bat --sdk_root=C:\Android\Sdk "ndk;26.3.11579264" --yes
-          C:\Android\Sdk\cmdline-tools\bin\sdkmanager.bat --sdk_root=C:\Android\Sdk "cmake;3.22.1" --yes
+          New-Item -ItemType Directory -Force -Path "C:\Android\Sdk"
+          Invoke-WebRequest -Uri "https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip" -OutFile "sdk-tools.zip"
+          7z x sdk-tools.zip -o"C:\Android\Sdk"
+          Remove-Item "sdk-tools.zip"
+          
+          $sdkmanager = "C:\Android\Sdk\cmdline-tools\bin\sdkmanager.bat"
+          
+          echo y | & $sdkmanager --sdk_root=C:\Android\Sdk --licenses
+          
+          & $sdkmanager --sdk_root=C:\Android\Sdk "platforms;android-37"
+          & $sdkmanager --sdk_root=C:\Android\Sdk "build-tools;34.0.0"
+          & $sdkmanager --sdk_root=C:\Android\Sdk "ndk;26.3.11579264"
+          & $sdkmanager --sdk_root=C:\Android\Sdk "cmake;3.22.1"
+          
           echo "ANDROID_HOME=C:\Android\Sdk" >> $env:GITHUB_ENV
           echo "ANDROID_NDK_HOME=C:\Android\Sdk\ndk\26.3.11579264" >> $env:GITHUB_ENV
           echo "ANDROID_NDK_ROOT=C:\Android\Sdk\ndk\26.3.11579264" >> $env:GITHUB_ENV
-        shell: cmd
+        shell: powershell
 
       - name: Setup Zig
         run: |
           curl -L https://ziglang.org/download/0.13.0/zig-windows-x86_64-0.13.0.zip -o zig.zip
-          7z x zig.zip -o"%USERPROFILE%\zig"
-          echo "%USERPROFILE%\zig\zig-windows-x86_64-0.13.0" >> %GITHUB_PATH%
-          del zig.zip
-        shell: cmd
+          7z x zig.zip -o"$env:USERPROFILE\zig"
+          echo "$env:USERPROFILE\zig\zig-windows-x86_64-0.13.0" >> $env:GITHUB_PATH
+          Remove-Item "zig.zip"
+        shell: powershell
 
       - name: Cache Rust
         uses: actions/cache@v4
@@ -111,61 +117,61 @@ jobs:
         run: |
           cd csqtt-uring
           .\build_linux.bat --no-tests
-        shell: cmd
+        shell: powershell
 
       - name: Build Android Client
         run: |
           cd rust-client
           .\build_so.bat --no-tests
-        shell: cmd
+        shell: powershell
 
       - name: Verify native libraries
         run: |
-          if exist "app\src\main\jniLibs\arm64-v8a\libclient.so" (
-            echo arm64-v8a libclient.so found
-          ) else (
-            echo arm64-v8a libclient.so NOT found
-            exit /b 1
-          )
-          if exist "app\src\main\jniLibs\armeabi-v7a\libclient.so" (
-            echo armeabi-v7a libclient.so found
-          ) else (
-            echo armeabi-v7a libclient.so NOT found
-            exit /b 1
-          )
-          if exist "app\src\main\assets\csqtt" (
-            echo csqtt server binary found
-          ) else (
-            echo csqtt server binary NOT found
-            exit /b 1
-          )
-        shell: cmd
+          if (Test-Path "app\src\main\jniLibs\arm64-v8a\libclient.so") {
+            Write-Host "arm64-v8a libclient.so found"
+          } else {
+            Write-Host "arm64-v8a libclient.so NOT found"
+            exit 1
+          }
+          if (Test-Path "app\src\main\jniLibs\armeabi-v7a\libclient.so") {
+            Write-Host "armeabi-v7a libclient.so found"
+          } else {
+            Write-Host "armeabi-v7a libclient.so NOT found"
+            exit 1
+          }
+          if (Test-Path "app\src\main\assets\csqtt") {
+            Write-Host "csqtt server binary found"
+          } else {
+            Write-Host "csqtt server binary NOT found"
+            exit 1
+          }
+        shell: powershell
 
       - name: Build APK
         run: |
-          call gradlew.bat :app:assembleRelease --no-daemon
-        shell: cmd
+          .\gradlew.bat :app:assembleRelease --no-daemon
+        shell: powershell
 
       - name: Copy APKs to output
         run: |
-          mkdir app\release
-          if exist "app\build\outputs\apk\release\app-universal-release.apk" (
-            copy "app\build\outputs\apk\release\app-universal-release.apk" "app\release\CSQTT-universal.apk"
-          )
-          if exist "app\build\outputs\apk\release\app-arm64-v8a-release.apk" (
-            copy "app\build\outputs\apk\release\app-arm64-v8a-release.apk" "app\release\CSQTT-arm64-v8a.apk"
-          )
-          if exist "app\build\outputs\apk\release\app-armeabi-v7a-release.apk" (
-            copy "app\build\outputs\apk\release\app-armeabi-v7a-release.apk" "app\release\CSQTT-armeabi-v7a.apk"
-          )
-        shell: cmd
+          New-Item -ItemType Directory -Force -Path "app\release"
+          if (Test-Path "app\build\outputs\apk\release\app-universal-release.apk") {
+            Copy-Item "app\build\outputs\apk\release\app-universal-release.apk" "app\release\CSQTT-universal.apk"
+          }
+          if (Test-Path "app\build\outputs\apk\release\app-arm64-v8a-release.apk") {
+            Copy-Item "app\build\outputs\apk\release\app-arm64-v8a-release.apk" "app\release\CSQTT-arm64-v8a.apk"
+          }
+          if (Test-Path "app\build\outputs\apk\release\app-armeabi-v7a-release.apk") {
+            Copy-Item "app\build\outputs\apk\release\app-armeabi-v7a-release.apk" "app\release\CSQTT-armeabi-v7a.apk"
+          }
+        shell: powershell
 
       - name: Generate release tag
         id: release_tag
         run: |
-          for /f %%i in ('powershell -Command "Get-Date -Format \"yyyy.MM.dd.HH.mm\""') do set DATE_TAG=%%i
-          echo tag_name=%DATE_TAG% >> %GITHUB_OUTPUT%
-        shell: cmd
+          $date = Get-Date -Format "yyyy.MM.dd.HH.mm"
+          echo "tag_name=$date" >> $env:GITHUB_OUTPUT
+        shell: powershell
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
